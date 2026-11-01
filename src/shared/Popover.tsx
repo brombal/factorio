@@ -64,7 +64,12 @@ export function Popover({ label, trigger, width = 320, children }: PopoverProps)
               right: 16,
               zIndex: 11,
               width,
-              padding: "12px 14px",
+              // Scroll a sheet taller than the screen below the header, padding included, so
+              // the first row's tooltips have room above them.
+              boxSizing: "border-box",
+              maxHeight: "calc(100dvh - 68px)",
+              overflowY: "auto",
+              padding: "16px 14px 12px",
               background: palette.surface,
               border: `2px solid ${palette.border}`,
               [mobile]: { left: 12, right: 12, width: "auto" },

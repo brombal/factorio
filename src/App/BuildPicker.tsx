@@ -51,8 +51,10 @@ export function BuildPicker({ data, preferences, onChange }: BuildPickerProps) {
   // The kind whose icons stand for the current choice; mixed is shown by productivity.
   const shownKind = preferences.modules === "speed" ? "speed" : "productivity";
 
-  const machineRows = machineGroups(data).map((group) => {
+  const machineRows = machineGroups(data).flatMap((group) => {
     const options = data.machines.filter((machine) => machine.categories.includes(group));
+    // A group with one machine, such as the oil refinery in vanilla, offers no choice.
+    if (options.length < 2) return [];
     return {
       key: group,
       label: groupLabel[group] ?? group,

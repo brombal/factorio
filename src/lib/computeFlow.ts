@@ -81,9 +81,22 @@ export function computeFlow(
     onStack.delete(item);
     itemOrder.push(item);
   };
-  for (const output of outputs) {
-    if (data.items[output.item] && !hidden.has(output.item)) visit(output.item);
-  }
+  // Walk the outputs that no other output uses first, so turning on an output that is already
+  // made inside another output's tree leaves the walk, and every node order, unchanged.
+  const usedInside = new Set<ItemId>();
+  const collectInputs = (item: ItemId) => {
+    const recipeId = findProducer(item);
+    if (!recipeId) return;
+    for (const input of Object.keys(data.recipes[recipeId].inputs)) {
+      if (usedInside.has(input)) continue;
+      usedInside.add(input);
+      collectInputs(input);
+    }
+  };
+  const walked = outputs.filter((output) => data.items[output.item] && !hidden.has(output.item));
+  for (const output of walked) collectInputs(output.item);
+  for (const output of walked) if (!usedInside.has(output.item)) visit(output.item);
+  for (const output of walked) visit(output.item);
 
   // Propagate demand from consumers to producers. Walking the reverse of the post-order means
   // every consumer of an item has been processed before the item itself, so its demand is final

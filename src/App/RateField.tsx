@@ -9,7 +9,7 @@ const display = (rate: number) => String(round(rate));
 interface RateFieldProps {
   value: number;
   /** What the + button sets when the value is zero, instead of the smallest step. */
-  restoreValue?: number;
+  startValue?: number;
   onChange: (value: number) => void;
 }
 
@@ -17,7 +17,7 @@ interface RateFieldProps {
  * An items-per-second input with step buttons, down to zero. A typed zero is only passed on
  * when the field loses focus, so typing "0.5" does not pass through zero on the way.
  */
-export function RateField({ value, restoreValue, onChange }: RateFieldProps) {
+export function RateField({ value, startValue, onChange }: RateFieldProps) {
   // Keep the typed text separately, so an in-progress entry such as "0." is not rewritten.
   const [text, setText] = useState(display(value));
   const focused = useRef(false);
@@ -25,8 +25,18 @@ export function RateField({ value, restoreValue, onChange }: RateFieldProps) {
     if (!focused.current) setText(display(value));
   }, [value]);
 
-  const down = Math.max(0, round(value - stepAbove(value - 1e-9)));
-  const up = value <= 0 && restoreValue ? restoreValue : round(value + stepAbove(value));
+  // The buttons step from what the field shows, so a typed rate counts before the field loses focus.
+  const typed = Number(text);
+  const shown = text.trim() !== "" && Number.isFinite(typed) && typed >= 0 ? typed : value;
+  const down = Math.max(0, round(shown - stepAbove(shown - 1e-9)));
+  const up = shown <= 0 && startValue ? startValue : round(shown + stepAbove(shown));
+  const step = (next: number) => {
+    setText(display(next));
+    onChange(next);
+  };
+  // Keep focus in the field when a button is pressed, so a typed zero does not take effect and
+  // shrink the panel under the pointer before the click lands.
+  const keepFocus = (event: { preventDefault: () => void }) => event.preventDefault();
   const buttonStyle = {
     width: 36,
     color: palette.text,
@@ -45,8 +55,9 @@ export function RateField({ value, restoreValue, onChange }: RateFieldProps) {
       <button
         type="button"
         aria-label="Decrease rate"
-        disabled={value <= 0}
-        onClick={() => onChange(down)}
+        disabled={shown <= 0}
+        onMouseDown={keepFocus}
+        onClick={() => step(down)}
         css={buttonStyle}
       >
         -
@@ -98,7 +109,8 @@ export function RateField({ value, restoreValue, onChange }: RateFieldProps) {
       <button
         type="button"
         aria-label="Increase rate"
-        onClick={() => onChange(up)}
+        onMouseDown={keepFocus}
+        onClick={() => step(up)}
         css={buttonStyle}
       >
         +

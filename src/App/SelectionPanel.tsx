@@ -237,8 +237,8 @@ export function SelectionPanel({
           .map((made) => ({
             item: made,
             rate: outputState.outputs.find((output) => output.item === made)?.perSecond ?? 0,
-            // What the + button restores from zero, as toggling it on in the Outputs sheet would.
-            restore: outputState.lastRates[made] ?? defaultOutputRate(data.items[made]),
+            // What the + button sets from zero: the category default, not the remembered rate.
+            start: defaultOutputRate(data.items[made]),
           }))
       : [];
   // With the output rate in view, the headline only adds something when the node also feeds
@@ -287,7 +287,7 @@ export function SelectionPanel({
             >
               <RateField
                 value={row.rate}
-                restoreValue={row.restore}
+                startValue={row.start}
                 onChange={(rate) => onOutputRateChange(row.item, rate)}
               />
               {rateRows.length > 1 && <span css={{ fontSize: 13 }}>{itemName(row.item)}</span>}

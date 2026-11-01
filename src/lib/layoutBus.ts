@@ -207,7 +207,7 @@ export function layoutBus(
   interface Slot {
     node: LayoutNode;
     /** Tap keys and widths in order along the slot: inputs, then drops. */
-    taps: { key: string; width: number }[];
+    taps: { key: string; width: number; input?: ItemId }[];
     inputCount: number;
     splitGap: number;
     tapsWidth: number;
@@ -249,6 +249,7 @@ export function layoutBus(
     const drops = (recipe ? outputs : [item]).filter((output) => laneRateOf(output) > 0);
     const taps = [
       ...inputs.map((input) => ({
+        input,
         key: edgeKey(recipe?.id ?? "", input),
         width: widthFor(flow.edgeRate.get(edgeKey(recipe?.id ?? "", input)) ?? 0),
       })),
@@ -276,9 +277,9 @@ export function layoutBus(
   }
 
   // Place the slots along the bus. Main-row nodes sit `slotGap` apart. A raised node waits
-  // until the main-row node making its last input is placed, then goes into the next gap
-  // where it fits: the main row leaves a corridor there just wide enough for its taps, and
-  // the node takes the lowest raised row where
+  // until the main-row node making its last input is placed, then goes into the gap right
+  // after it: the main row leaves a corridor there just wide enough for its taps, and the
+  // node takes the lowest raised row where
   //  - its frame is clear of the row's other frames,
   //  - its taps pass between the frames of the raised rows below it,
   //  - nothing from below (taps to higher rows, exports) runs into its frame, and
@@ -345,18 +346,18 @@ export function layoutBus(
   };
 
   let cursor = slotGap;
-  const pending: Slot[] = [...(raisedAfter.get(-1) ?? [])];
-  // Fill the gap ending at `cursor` with every pending raised node that fits, in order, each
-  // corridor `slotGap / 2` clear of the one before.
-  const fillGap = () => {
+  // Fill the gap ending at `cursor` with the raised nodes anchored there, in order, each
+  // corridor `slotGap / 2` clear of the one before. A node that does not fit widens the gap
+  // instead of moving to a later one, so the main-row node before it is always one of its inputs.
+  const fillGap = (raised: Slot[]) => {
     let corridorLeft = cursor - slotGap / 2;
-    for (const slot of [...pending]) {
-      if (!tryRaise(slot, corridorLeft)) continue;
-      pending.splice(pending.indexOf(slot), 1);
+    for (const slot of raised) {
+      while (!tryRaise(slot, corridorLeft)) corridorLeft += tapGap * 2;
       corridorLeft += slot.tapsWidth + slotGap / 2;
       cursor = corridorLeft + slotGap / 2;
     }
   };
+  fillGap(raisedAfter.get(-1) ?? []);
   mainSlots.forEach((slot, index) => {
     let left = cursor;
     // An exporting node must not sit under a raised frame, since its export would run into it.
@@ -378,14 +379,8 @@ export function layoutBus(
     if (slot.exports) {
       blocked[1].push([slot.node.along - exportsHalf, slot.node.along + exportsHalf]);
     }
-    pending.push(...(raisedAfter.get(index) ?? []));
-    fillGap();
+    fillGap(raisedAfter.get(index) ?? []);
   });
-  // Past the last main-row node, step along until every remaining raised node fits.
-  while (pending.length) {
-    fillGap();
-    if (pending.length) cursor += tapGap * 2;
-  }
   const raisedRight = Math.max(...frames.flat().map(([, b]) => b));
   const alongMax = Math.max(cursor, raisedRight + slotGap);
   // Taps end at the edge of the row their node sits in.
@@ -408,33 +403,37 @@ export function layoutBus(
     consumers: Consumer[];
     remainder: number;
   }
-  const intervals: Interval[] = [];
-  for (const item of itemOrder) {
-    const node = nodeOfItem.get(item);
-    const laneRate = laneRateOf(item);
-    if (!node || laneRate <= 0) continue;
-    const from = tapAlong.get(`out:${item}`) ?? node.along;
-    const consumers: Consumer[] = [];
-    for (const [recipeId, recipe] of Object.entries(data.recipes)) {
-      const along = tapAlong.get(edgeKey(recipeId, item));
-      if (!(item in recipe.inputs) || along === undefined) continue;
-      consumers.push({
-        recipe: recipeId,
-        along,
-        rate: flow.edgeRate.get(edgeKey(recipeId, item)) ?? 0,
-        backEdge: flow.backEdges.has(edgeKey(recipeId, item)),
-      });
+  const buildIntervals = () => {
+    const intervals: Interval[] = [];
+    for (const item of itemOrder) {
+      const node = nodeOfItem.get(item);
+      const laneRate = laneRateOf(item);
+      if (!node || laneRate <= 0) continue;
+      const from = tapAlong.get(`out:${item}`) ?? node.along;
+      const consumers: Consumer[] = [];
+      for (const [recipeId, recipe] of Object.entries(data.recipes)) {
+        const along = tapAlong.get(edgeKey(recipeId, item));
+        if (!(item in recipe.inputs) || along === undefined) continue;
+        consumers.push({
+          recipe: recipeId,
+          along,
+          rate: flow.edgeRate.get(edgeKey(recipeId, item)) ?? 0,
+          backEdge: flow.backEdges.has(edgeKey(recipeId, item)),
+        });
+      }
+      consumers.sort((a, b) => a.along - b.along);
+      const forward = consumers.filter((consumer) => !consumer.backEdge && consumer.along > from);
+      const consumed = forward.reduce((sum, consumer) => sum + consumer.rate, 0);
+      const remainder = laneRate - consumed;
+      const lastTap = forward.length
+        ? forward[forward.length - 1].along + widthFor(forward[forward.length - 1].rate) / 2
+        : from;
+      const to = remainder > 1e-9 ? Math.max(lastTap, from) + stubLength : lastTap;
+      intervals.push({ item, from, to, consumers, remainder });
     }
-    consumers.sort((a, b) => a.along - b.along);
-    const forward = consumers.filter((consumer) => !consumer.backEdge && consumer.along > from);
-    const consumed = forward.reduce((sum, consumer) => sum + consumer.rate, 0);
-    const remainder = laneRate - consumed;
-    const lastTap = forward.length
-      ? forward[forward.length - 1].along + widthFor(forward[forward.length - 1].rate) / 2
-      : from;
-    const to = remainder > 1e-9 ? Math.max(lastTap, from) + stubLength : lastTap;
-    intervals.push({ item, from, to, consumers, remainder });
-  }
+    return intervals.sort((a, b) => a.from - b.from);
+  };
+  let intervals = buildIntervals();
 
   // Assign lanes in order of arrival; lane indices count up in creation order.
   //  - "noCrossing": an item may only take an existing lane when every lane nearer the nodes
@@ -442,7 +441,6 @@ export function layoutBus(
   //    it takes the lane farthest from the nodes, leaving the nearer ones for later items.
   //  - "greedy": the lowest-numbered vacant lane, which uses the fewest lanes but can drop
   //    across lanes that are still in use.
-  intervals.sort((a, b) => a.from - b.from);
   const laneFreeAfter: number[] = [];
   const laneOfItem = new Map<ItemId, number>();
   for (const interval of intervals) {
@@ -466,6 +464,22 @@ export function layoutBus(
   // Put the lanes in order across the bus with the newest nearest the nodes, the order a bus is
   // built in. No-crossing reuse relies on it.
   const nearestFirst = laneFreeAfter.map((_, lane) => lane).reverse();
+
+  // Order each node's input taps by lane, nearest the nodes first, so a near lane turns up and
+  // ends before the farther lanes turn up past it. Inputs stay ahead of the node's drops, so no
+  // lane's vacancy at a drop changes and the lane assignment above still holds.
+  const laneRank = (input: ItemId | undefined) => {
+    const lane = input === undefined ? undefined : laneOfItem.get(input);
+    return lane === undefined ? Infinity : nearestFirst.indexOf(lane);
+  };
+  for (const slot of slots) {
+    const inputTaps = slot.taps
+      .slice(0, slot.inputCount)
+      .sort((a, b) => laneRank(a.input) - laneRank(b.input));
+    slot.taps.splice(0, slot.inputCount, ...inputTaps);
+    setTaps(slot);
+  }
+  intervals = buildIntervals();
 
   // Lanes are stacked by their widest occupant. `base` is a lane's far edge; its lines occupy
   // [base - width, base], so narrowing happens on the node side where taps leave.
