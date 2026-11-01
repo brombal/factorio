@@ -1,4 +1,11 @@
-import type { ItemId, Machine, ProductionData, RecipeId } from "../data/types.ts";
+import type {
+  ExtractionCategory,
+  Item,
+  ItemId,
+  Machine,
+  ProductionData,
+  RecipeId,
+} from "../data/types.ts";
 import type { BuildPreferences } from "./buildPreferences.ts";
 import type { Flow } from "./computeFlow.ts";
 import { type MachineModules, machineModules } from "./moduleEffects.ts";
@@ -9,6 +16,8 @@ export interface MachineCount {
   count: number;
   /** The modules each of these machines holds. */
   modules: MachineModules;
+  /** Whether this is the machine the player chose to build for this recipe or resource. */
+  chosen: boolean;
 }
 
 /**
@@ -33,29 +42,47 @@ export function recipeMachineCounts(
       const modules = machineModules(data, preferences, machine, recipe);
       const crafts = output / (1 + modules.productivity);
       const speed = machine.speed * modules.speedMultiplier;
-      return { machine, modules, count: (crafts * recipe.time) / speed };
+      return {
+        machine,
+        modules,
+        count: (crafts * recipe.time) / speed,
+        chosen: preferences.machines[recipe.craftingCategory] === machine.id,
+      };
     });
 }
 
+/** The kind of machine that extracts a raw item, or undefined for gathered items such as wood. */
+export const extractionOf = (item: Item | undefined): ExtractionCategory | undefined =>
+  item?.extraction ?? (item?.miningTime === undefined ? undefined : "mining");
+
 /**
- * How many of each drill type it takes to mine a raw item at the rate the flow demands.
- * Productivity in a drill raises its output, so it lowers the drill count, not the ore rate.
+ * How many of each extracting machine it takes to supply a raw item at the rate the flow
+ * demands: drills for ores, pumpjacks for crude oil, offshore pumps for water. Productivity
+ * raises a machine's output, so it lowers the count, not the item's rate. A pumpjack's output
+ * also scales with the yield of its oil field, taken from the player's average.
  */
-export function miningDrillCounts(
+export function extractionCounts(
   data: ProductionData,
   flow: Flow,
   item: ItemId,
   preferences: BuildPreferences,
 ): MachineCount[] {
+  const category = extractionOf(data.items[item]);
   const miningTime = data.items[item]?.miningTime;
-  // Pumped items are counted in pumpjacks and offshore pumps, not drills.
-  if (miningTime === undefined || data.items[item]?.extraction) return [];
+  if (!category || miningTime === undefined) return [];
   const rate = flow.itemRate.get(item) ?? 0;
+  const fieldYield = category === "fluid-extraction" ? preferences.pumpjackYield / 100 : 1;
   return data.machines
-    .filter((machine) => machine.categories.includes("mining"))
+    .filter((machine) => machine.categories.includes(category))
     .map((machine) => {
       const modules = machineModules(data, preferences, machine);
-      const perDrill = machine.speed * modules.speedMultiplier * (1 + modules.productivity);
-      return { machine, modules, count: (rate * miningTime) / perDrill };
+      const perMachine =
+        machine.speed * modules.speedMultiplier * (1 + modules.productivity) * fieldYield;
+      return {
+        machine,
+        modules,
+        count: (rate * miningTime) / perMachine,
+        chosen: preferences.machines[category] === machine.id,
+      };
     });
 }

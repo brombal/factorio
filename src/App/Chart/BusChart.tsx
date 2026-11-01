@@ -2,12 +2,13 @@ import { select } from "d3-selection";
 import { type ZoomBehavior, type ZoomTransform, zoom, zoomIdentity } from "d3-zoom";
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { ProductionData } from "../../data/types.ts";
-import { type BuildPreferences, isPreferredMachine } from "../../lib/buildPreferences.ts";
+import type { BuildPreferences } from "../../lib/buildPreferences.ts";
 import type { Flow } from "../../lib/computeFlow.ts";
-import type { BusLayout, PathCommand, Pt } from "../../lib/layoutBus.ts";
+import { isFluid, pipePerSecond } from "../../lib/fluids.ts";
+import type { BusLayout, LayoutPath, PathCommand, Pt } from "../../lib/layoutBus.ts";
 import { defaultLayoutOptions } from "../../lib/layoutBus.ts";
 import type { Orientation } from "../../lib/layoutSettings.ts";
-import { miningDrillCounts, recipeMachineCounts } from "../../lib/machineCounts.ts";
+import { extractionCounts, recipeMachineCounts } from "../../lib/machineCounts.ts";
 import { type Selection, selectedPathIds, selectionForPath } from "../../lib/selection.ts";
 import { categoryColor, palette } from "../../theme/palette.ts";
 import { roundUp } from "../../util/roundUp.ts";
@@ -34,6 +35,11 @@ const badgeHeight = 14;
 const labelHeight = 13;
 // Rough advance width of one character in the 10px bold label font, for sizing label boxes.
 const charWidth = 6.2;
+// Wall thickness of a fluid line drawn as a hollow pipe.
+const pipeWall = 1.5;
+// Loop taps and surplus to store are dashed: neither is part of the forward flow. Other fluid
+// lines are drawn as pipes, a darker channel inside walls of the line's color.
+const isDashed = (path: LayoutPath) => path.backEdge || path.stored === true;
 
 /**
  * Draws a bus layout as SVG and lets the user pan and zoom it. The layout's abstract axes are
@@ -163,17 +169,36 @@ export function BusChart({
     };
   }, [layout, selection]);
 
+  const strokes = useMemo(() => {
+    const isHollow = (path: LayoutPath) =>
+      !isDashed(path) && isFluid(data.items[path.item]) && path.width >= pipeWall * 2 + 1;
+    // Draw all of an item's walls before any of its channels, so pieces of one pipe that
+    // overlap at forks, drops, and corners merge instead of walling across each other. Lit
+    // paths still go above unlit ones.
+    const result: { path: LayoutPath; inner: boolean }[] = [];
+    const lit = (path: LayoutPath) => !litPaths || litPaths.has(path.id);
+    for (const layer of [orderedPaths.filter((path) => !lit(path)), orderedPaths.filter(lit)]) {
+      const items = [...new Set(layer.map((path) => path.item))];
+      for (const item of items) {
+        const paths = layer.filter((path) => path.item === item);
+        result.push(...paths.map((path) => ({ path, inner: false })));
+        result.push(...paths.filter(isHollow).map((path) => ({ path, inner: true })));
+      }
+    }
+    return result;
+  }, [orderedPaths, litPaths, data]);
+
   // Count of the chosen machine for each node, rounded up to whole machines to build.
   const machineBadges = useMemo(() => {
     const badges = new Map<string, number>();
     for (const node of layout.nodes) {
       const counts =
         node.kind === "raw" && node.item
-          ? miningDrillCounts(data, flow, node.item, preferences)
+          ? extractionCounts(data, flow, node.item, preferences)
           : node.recipe
             ? recipeMachineCounts(data, flow, node.recipe, preferences)
             : [];
-      const picked = counts.find(({ machine }) => isPreferredMachine(preferences, machine));
+      const picked = counts.find((count) => count.chosen);
       if (picked) badges.set(node.id, roundUp(picked.count));
     }
     return badges;
@@ -197,48 +222,70 @@ export function BusChart({
       aria-label="Production bus chart"
     >
       <g transform={transform.toString()}>
-        {orderedPaths.map((path) => (
-          <path
-            key={path.id}
-            d={toPathData(path.commands)}
-            fill="none"
-            stroke={!litPaths || litPaths.has(path.id) ? itemColor(path.item) : palette.dim}
-            strokeWidth={path.width}
-            strokeLinecap="butt"
-            strokeLinejoin="miter"
-            strokeDasharray={path.backEdge ? "4 4" : undefined}
-            onClick={(event) => {
-              event.stopPropagation();
-              onSelect(selectionForPath(path));
-            }}
-          >
-            <title>{`${data.items[path.item]?.name}: ${path.rate.toFixed(2)}/s`}</title>
-          </path>
-        ))}
+        {strokes.map(({ path, inner }) => {
+          const stroke =
+            litPaths && !litPaths.has(path.id)
+              ? palette.dim
+              : path.stored
+                ? palette.muted
+                : itemColor(path.item);
+          return inner ? (
+            <path
+              key={`${path.id}:inner`}
+              d={toPathData(path.commands)}
+              fill="none"
+              stroke={`color-mix(in oklch, ${stroke} 30%, ${palette.bg})`}
+              strokeWidth={path.width - pipeWall * 2}
+              strokeLinecap="butt"
+              strokeLinejoin="miter"
+              pointerEvents="none"
+            />
+          ) : (
+            <path
+              key={path.id}
+              d={toPathData(path.commands)}
+              fill="none"
+              stroke={stroke}
+              strokeWidth={path.width}
+              strokeLinecap="butt"
+              strokeLinejoin="miter"
+              strokeDasharray={isDashed(path) ? "4 4" : undefined}
+              onClick={(event) => {
+                event.stopPropagation();
+                onSelect(selectionForPath(path));
+              }}
+            >
+              <title>{`${data.items[path.item]?.name}: ${path.rate.toFixed(2)}/s`}</title>
+            </path>
+          );
+        })}
 
         {belt &&
           layout.laneHeads.map((head) => {
-            const belts = head.rate / belt.perSecond;
-            const text = String(roundUp(belts));
+            const fluid = isFluid(data.items[head.item]);
+            const carriers = head.rate / (fluid ? pipePerSecond : belt.perSecond);
+            // A count only shows when a line needs more than one belt or pipe; one is the norm.
+            if (carriers <= 1 + 1e-9) return null;
+            const text = String(roundUp(carriers));
             const width = 8 + text.length * charWidth;
             const [x, y] = point([head.along, head.across]);
-            const dim = litPaths && !litPaths.has(`lane:${head.item}:0`);
-            const color = dim ? palette.dim : belt.color;
-            // More than one full belt means the item needs extra lanes on a real bus.
-            const overflow = belts > 1 + 1e-9;
+            const dim = litPaths && !litPaths.has(head.pathId);
+            const color = dim ? palette.dim : fluid ? palette.muted : belt.color;
             return (
               <g
-                key={`belts:${head.item}`}
+                key={`belts:${head.pathId}`}
                 transform={`translate(${x}, ${y})`}
                 pointerEvents="none"
               >
-                <title>{`${text} ${belt.shortName.toLowerCase()} belts`}</title>
+                <title>
+                  {fluid ? `${text} pumped pipes` : `${text} ${belt.shortName.toLowerCase()} belts`}
+                </title>
                 <rect
                   x={-width / 2}
                   y={-labelHeight / 2}
                   width={width}
                   height={labelHeight}
-                  fill={overflow ? color : palette.bg}
+                  fill={color}
                   stroke={color}
                   strokeWidth={1.5}
                 />
@@ -247,7 +294,7 @@ export function BusChart({
                   dominantBaseline="central"
                   fontSize={10}
                   fontWeight={700}
-                  fill={overflow ? palette.bg : color}
+                  fill={palette.bg}
                   css={{ fontVariantNumeric: "tabular-nums" }}
                 >
                   {text}

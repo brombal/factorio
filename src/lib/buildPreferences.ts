@@ -1,9 +1,4 @@
-import type {
-  CraftingCategory,
-  ExtractionCategory,
-  Machine,
-  ProductionData,
-} from "../data/types.ts";
+import type { CraftingCategory, ExtractionCategory, ProductionData } from "../data/types.ts";
 
 export type MachineGroup = CraftingCategory | ExtractionCategory;
 
@@ -22,7 +17,17 @@ export interface BuildPreferences {
   modules: ModuleChoice;
   /** Module tier, 1 to 3, used for whichever modules are chosen. */
   moduleTier: number;
+  /** Average yield of the oil fields under the pumpjacks, as a percentage such as 100. */
+  pumpjackYield: number;
 }
+
+/**
+ * Machine groups whose choice follows another group's, so they need no row of their own:
+ * recipes that take a fluid run in the chosen assembler when it can run them.
+ */
+export const followedGroups: Partial<Record<MachineGroup, MachineGroup>> = {
+  "crafting-with-fluid": "crafting",
+};
 
 const storageKey = "factorio-bus:build-preferences";
 
@@ -67,7 +72,26 @@ export function loadBuildPreferences(data: ProductionData): BuildPreferences {
     : "none";
   const tiers = new Set(data.modules.map((module) => module.tier));
   const moduleTier = tiers.has(saved.moduleTier ?? 0) ? (saved.moduleTier ?? 1) : 1;
-  return { machines, belt, modules, moduleTier };
+  const pumpjackYield =
+    typeof saved.pumpjackYield === "number" && saved.pumpjackYield > 0 ? saved.pumpjackYield : 100;
+  return withFollowedGroups(data, { machines, belt, modules, moduleTier, pumpjackYield });
+}
+
+/**
+ * Sets each following group's machine to the one chosen for the group it follows, or to its
+ * lowest tier when that machine cannot run it (assembler 2 when assembler 1 is chosen).
+ */
+export function withFollowedGroups(
+  data: ProductionData,
+  preferences: BuildPreferences,
+): BuildPreferences {
+  const machines = { ...preferences.machines };
+  for (const [group, leader] of Object.entries(followedGroups) as [MachineGroup, MachineGroup][]) {
+    const candidates = data.machines.filter((machine) => machine.categories.includes(group));
+    machines[group] =
+      candidates.find((machine) => machine.id === machines[leader])?.id ?? candidates[0]?.id;
+  }
+  return { ...preferences, machines };
 }
 
 export function saveBuildPreferences(preferences: BuildPreferences) {
@@ -77,6 +101,3 @@ export function saveBuildPreferences(preferences: BuildPreferences) {
     // Not persisting is acceptable; the choice still applies for this visit.
   }
 }
-
-export const isPreferredMachine = (preferences: BuildPreferences, machine: Machine) =>
-  Object.values(preferences.machines).includes(machine.id);

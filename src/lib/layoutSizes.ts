@@ -9,6 +9,7 @@ export interface LayoutSize {
   nodeOrder: NodeOrder;
   laneReuse: LaneReuse;
   belts: number;
+  pipes: number;
   lanes: number;
   /** Chart length, used only to break ties; it has no in-game meaning. */
   length: number;
@@ -31,6 +32,7 @@ export function layoutSizes(
         nodeOrder,
         laneReuse,
         belts: layout.busWidth.belts,
+        pipes: layout.busWidth.pipes,
         lanes: layout.busWidth.lanes,
         length: layout.bounds.alongMax,
       };
@@ -39,7 +41,8 @@ export function layoutSizes(
 }
 
 /**
- * The narrowest combination: fewest belts, then shortest, then the current one, so a full tie
+ * The narrowest combination: fewest belts, then fewest pipes, then shortest, then the current
+ * one, so a full tie
  * never changes the layout for nothing.
  */
 export function narrowestLayout(
@@ -50,6 +53,9 @@ export function narrowestLayout(
     size.nodeOrder === current.nodeOrder && size.laneReuse === current.laneReuse;
   return [...sizes].sort(
     (a, b) =>
-      a.belts - b.belts || a.length - b.length || Number(isCurrent(b)) - Number(isCurrent(a)),
+      a.belts - b.belts ||
+      a.pipes - b.pipes ||
+      a.length - b.length ||
+      Number(isCurrent(b)) - Number(isCurrent(a)),
   )[0];
 }

@@ -1,16 +1,34 @@
-import type { ItemId, ProductionData } from "../data/types.ts";
-import { type BuildPreferences, isPreferredMachine } from "../lib/buildPreferences.ts";
+import type { ExtractionCategory, ItemId, ProductionData } from "../data/types.ts";
+import type { BuildPreferences } from "../lib/buildPreferences.ts";
 import { edgeKey, type Flow } from "../lib/computeFlow.ts";
-import { isFluid } from "../lib/fluids.ts";
+import { isFluid, pipePerSecond } from "../lib/fluids.ts";
 import type { BusLayout } from "../lib/layoutBus.ts";
-import { type MachineCount, miningDrillCounts, recipeMachineCounts } from "../lib/machineCounts.ts";
+import {
+  extractionCounts,
+  extractionOf,
+  type MachineCount,
+  recipeMachineCounts,
+} from "../lib/machineCounts.ts";
 import { defaultOutputRate, type OutputState } from "../lib/outputs.ts";
 import type { Selection } from "../lib/selection.ts";
+import { Tooltip } from "../shared/Tooltip.tsx";
 import { categoryColor, mobile, palette } from "../theme/palette.ts";
 import { roundUp } from "../util/roundUp.ts";
 import { RateField } from "./RateField.tsx";
 
+const extractionHeading: Record<ExtractionCategory, string> = {
+  mining: "Drills",
+  "fluid-extraction": "Pumpjacks",
+  offshore: "Offshore pumps",
+};
+
 const formatRate = (rate: number) => (rate >= 10 ? rate.toFixed(1) : rate.toFixed(2));
+// Units of fluid one storage tank holds (Factorio wiki, Fluid system).
+const storageTankCapacity = 25000;
+const formatFillTime = (rate: number) => {
+  const minutes = storageTankCapacity / rate / 60;
+  return minutes < 120 ? `${Math.round(minutes)} min` : `${(minutes / 60).toFixed(1)} h`;
+};
 const formatExact = (count: number) => count.toFixed(2).replace(/\.?0+$/, "");
 
 interface Row {
@@ -77,27 +95,44 @@ export function SelectionPanel({
     return Object.keys(data.recipes[node?.recipe ?? ""]?.outputs ?? {})[0] ?? nodeId;
   };
   const machineTiles = (counts: MachineCount[]): Tile[] =>
-    counts.map(({ machine, count }) => ({
+    counts.map(({ machine, count, chosen }) => ({
       key: machine.id,
       title: `${machine.name}, speed ${machine.speed}: ${formatExact(count)} exactly`,
       icon: machine.icon,
       value: roundUp(count),
-      chosen: isPreferredMachine(preferences, machine),
+      chosen,
     }));
-  const beltTiles = (item: ItemId, rate: number): Tile[] =>
-    isFluid(data.items[item])
-      ? []
-      : data.belts.map((tier) => ({
+  // Belts for items, or pumped pipelines for fluids.
+  const transportGroup = (item: ItemId, rate: number) => {
+    if (!isFluid(data.items[item])) {
+      return {
+        heading: "Belts",
+        tiles: data.belts.map((tier) => ({
           key: tier.id,
           title: `${tier.shortName} belts at ${tier.perSecond}/s each: ${formatExact(rate / tier.perSecond)} exactly`,
           icon: tier.icon,
           value: roundUp(rate / tier.perSecond),
           chosen: tier.id === preferences.belt,
-        }));
+        })),
+      };
+    }
+    return {
+      heading: "Pipes",
+      tiles: [
+        {
+          key: "pipes",
+          title: `Pumped pipelines at ${pipePerSecond}/s each: ${formatExact(rate / pipePerSecond)} exactly`,
+          icon: data.items.pump?.icon,
+          value: roundUp(rate / pipePerSecond),
+          chosen: true,
+        },
+      ],
+    };
+  };
 
   // Say what the chosen machine holds, or why it holds nothing, when modules are switched on.
   const moduleNote = (counts: MachineCount[]) => {
-    const chosen = counts.find(({ machine }) => isPreferredMachine(preferences, machine));
+    const chosen = counts.find((count) => count.chosen);
     if (!chosen || preferences.modules === "none") return undefined;
     const { machine, modules } = chosen;
     if (modules.module) {
@@ -117,10 +152,18 @@ export function SelectionPanel({
   };
 
   // The items a node makes, from its id, so they are known even after it leaves the chart.
-  const nodeMakes = (nodeId: string) =>
-    nodeId.startsWith("raw:")
+  const nodeRecipe = (nodeId: string) => nodeId.slice("recipe:".length);
+  // A cracker only adds to a lane, so its output rate is set on the item's main producer, and
+  // fluids are not offered as outputs, as in the Outputs sheet.
+  const nodeMakes = (nodeId: string) => {
+    const recipe = data.recipes[nodeRecipe(nodeId)];
+    const made = nodeId.startsWith("raw:")
       ? [nodeId.slice("raw:".length)]
-      : Object.keys(data.recipes[nodeId.slice("recipe:".length)]?.outputs ?? {});
+      : recipe && !recipe.balancing
+        ? Object.keys(recipe.outputs)
+        : [];
+    return made.filter((item) => !isFluid(data.items[item]));
+  };
 
   // Gather the panel's content for each kind of selection.
   let content: PanelContent | undefined;
@@ -140,34 +183,39 @@ export function SelectionPanel({
       };
     } else if (node.kind === "raw" && node.item) {
       const rate = flow.itemRate.get(node.item) ?? 0;
-      const drillCounts = miningDrillCounts(data, flow, node.item, preferences);
+      const counts = extractionCounts(data, flow, node.item, preferences);
+      const extraction = extractionOf(data.items[node.item]);
       content = {
         item: node.item,
         title: itemName(node.item),
-        // Wood and fish are gathered rather than mined, and get no drill counts.
-        headline: `${data.items[node.item]?.miningTime ? "Mine" : "Supply"} ${formatRate(rate)}/s`,
+        // Wood and fish are gathered rather than mined, and get no drill counts. Crude oil also
+        // names the total field yield it needs, which does not depend on the yield setting:
+        // the pumpjacks at the chosen yield add up to that yield times their count.
+        headline:
+          extraction === "fluid-extraction"
+            ? `Pump ${formatRate(rate)}/s; ${Math.round((counts.find((count) => count.chosen)?.count ?? 0) * preferences.pumpjackYield).toLocaleString("en-US")}% total yield`
+            : `${extraction === "offshore" ? "Pump" : extraction ? "Mine" : "Supply"} ${formatRate(rate)}/s`,
         tileGroups: [
           {
-            heading: "Drills",
-            tiles: machineTiles(drillCounts),
-            note: moduleNote(drillCounts),
+            heading: extraction ? extractionHeading[extraction] : "Drills",
+            tiles: machineTiles(counts),
+            note: moduleNote(counts),
           },
-          { heading: "Belts", tiles: beltTiles(node.item, rate) },
+          transportGroup(node.item, rate),
         ],
         sections: [],
       };
     } else if (node.recipe) {
       const recipe = data.recipes[node.recipe];
       const machineCounts = recipeMachineCounts(data, flow, recipe.id, preferences);
-      const outputs = Object.keys(recipe.outputs).filter(
-        (output) => (flow.itemRate.get(output) ?? 0) > 0,
-      );
+      // What this recipe itself makes, which for an item with crackers is not the item's total.
+      const madeHere = (output: ItemId) => flow.madeRate.get(edgeKey(recipe.id, output)) ?? 0;
+      const storedHere = (output: ItemId) => flow.storedRate.get(edgeKey(recipe.id, output)) ?? 0;
+      const outputs = Object.keys(recipe.outputs).filter((output) => madeHere(output) > 0);
       content = {
         item: outputs[0] ?? recipe.id,
         title: recipe.name ?? itemName(outputs[0] ?? recipe.id),
-        headline: `Make ${outputs
-          .map((output) => `${formatRate(flow.itemRate.get(output) ?? 0)}/s ${itemName(output)}`)
-          .join(", ")}`,
+        headline: "",
         tileGroups: [
           {
             heading: "Machines required",
@@ -184,6 +232,17 @@ export function SelectionPanel({
               rate: flow.edgeRate.get(edgeKey(recipe.id, input)) ?? 0,
             })),
           },
+          {
+            heading: "Outputs",
+            rows: outputs.map((output) => ({
+              item: output,
+              label:
+                storedHere(output) > 0
+                  ? `${itemName(output)}, ${formatRate(storedHere(output))}/s stored`
+                  : itemName(output),
+              rate: madeHere(output),
+            })),
+          },
         ],
       };
     }
@@ -197,13 +256,32 @@ export function SelectionPanel({
         (path) => path.item === selection.item && path.order >= selection.order && path.toNode,
       )
       .sort((a, b) => a.order - b.order);
+    const joins = layout.paths.filter(
+      (path) =>
+        path.item === selection.item &&
+        path.kind === "lane" &&
+        path.fromNode &&
+        path.order > selection.order,
+    );
     const rate = segment?.rate ?? 0;
     content = {
       item: selection.item,
       title: itemName(selection.item),
       headline: `${formatRate(rate)}/s on this stretch`,
-      tileGroups: [{ heading: "Belts", tiles: beltTiles(selection.item, rate) }],
+      tileGroups: [transportGroup(selection.item, rate)],
       sections: [
+        {
+          // Crackers that add to the lane further along, so the rates fed below add up.
+          heading: "Joined by",
+          rows: joins.map((path) => {
+            const recipe = data.recipes[path.fromNode?.slice("recipe:".length) ?? ""];
+            return {
+              item: selection.item,
+              label: recipe?.name ?? recipe?.id ?? "",
+              rate: path.rate,
+            };
+          }),
+        },
         {
           heading: "Feeds",
           rows: feeds.map((path) => {
@@ -212,6 +290,15 @@ export function SelectionPanel({
           }),
         },
       ],
+    };
+  } else if (selection.kind === "stored") {
+    const rate = flow.storedRate.get(edgeKey(nodeRecipe(selection.node), selection.item)) ?? 0;
+    content = {
+      item: selection.item,
+      title: `${itemName(selection.item)} to store`,
+      headline: `${formatRate(rate)}/s left over, stored. Fills a storage tank every ${formatFillTime(rate)}.`,
+      tileGroups: [transportGroup(selection.item, rate)],
+      sections: [],
     };
   } else {
     const tap = layout.paths.find(
@@ -222,8 +309,12 @@ export function SelectionPanel({
     content = {
       item: selection.item,
       title: `${itemName(selection.item)} into ${itemName(consumer)}`,
-      headline: `${formatRate(rate)}/s`,
-      tileGroups: [{ heading: "Belts", tiles: beltTiles(selection.item, rate) }],
+      // A tap that leaves a node is a feed, which skips the bus; a lane can also end in a node.
+      headline:
+        tap?.kind === "tap" && tap.fromNode
+          ? `${formatRate(rate)}/s, fed straight in rather than from the bus`
+          : `${formatRate(rate)}/s`,
+      tileGroups: [transportGroup(selection.item, rate)],
       sections: [],
     };
   }
@@ -245,7 +336,9 @@ export function SelectionPanel({
   // the bus, and then it says how the total splits so it does not read as a second rate.
   const onChart = selection.kind !== "node" || layout.nodes.some((n) => n.id === selection.node);
   const busRate = (item: ItemId) =>
-    (flow.itemRate.get(item) ?? 0) - (flow.outputRate.get(item) ?? 0);
+    (flow.itemRate.get(item) ?? 0) -
+    (flow.outputRate.get(item) ?? 0) -
+    (flow.surplusRate.get(item) ?? 0);
   const single = rateRows.length === 1 ? rateRows[0] : undefined;
   const headline =
     !onChart || !single || single.rate === 0
@@ -302,26 +395,33 @@ export function SelectionPanel({
           <div key={group.heading} css={{ marginTop: 12 }}>
             <div css={headingStyle}>{group.heading}</div>
             <div css={{ display: "flex", gap: 6 }}>
-              {group.tiles.map((tile) => (
-                <div
+              {group.tiles.map((tile, index) => (
+                <Tooltip
                   key={tile.key}
-                  title={tile.title}
-                  css={{
-                    flex: "1 1 0",
-                    minWidth: 0,
-                    display: "flex",
-                    alignItems: "center",
-                    gap: 6,
-                    padding: "5px 8px",
-                    border: `1px solid ${tile.chosen ? palette.accent : palette.border}`,
-                    fontWeight: tile.chosen ? 700 : 400,
-                    fontSize: 13,
-                    fontVariantNumeric: "tabular-nums",
-                  }}
+                  label={tile.title}
+                  maxWidth={220}
+                  align={
+                    index === 0 ? "start" : index === group.tiles.length - 1 ? "end" : "center"
+                  }
+                  css={{ flex: "1 1 0", minWidth: 0 }}
                 >
-                  {tile.icon && <img src={tile.icon} alt="" width={20} height={20} />}
-                  {tile.value}
-                </div>
+                  <div
+                    css={{
+                      width: "100%",
+                      display: "flex",
+                      alignItems: "center",
+                      gap: 6,
+                      padding: "5px 8px",
+                      border: `1px solid ${tile.chosen ? palette.accent : palette.border}`,
+                      fontWeight: tile.chosen ? 700 : 400,
+                      fontSize: 13,
+                      fontVariantNumeric: "tabular-nums",
+                    }}
+                  >
+                    {tile.icon && <img src={tile.icon} alt="" width={20} height={20} />}
+                    {tile.value}
+                  </div>
+                </Tooltip>
               ))}
             </div>
             {group.note && (

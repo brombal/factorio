@@ -48,7 +48,12 @@ const rowLabels: Record<keyof LayoutSettings, string> = {
   outputNodes: "Output nodes",
 };
 
-const belts = (count: number) => `${count} belt${count === 1 ? "" : "s"}`;
+const plural = (count: number, word: string) => `${count} ${word}${count === 1 ? "" : "s"}`;
+// Pipes are only mentioned when the bus has fluid lanes.
+const widthText = (size: LayoutSize, beltName = "") =>
+  `${plural(size.belts, beltName ? `${beltName} belt` : "belt")}${
+    size.pipes ? ` and ${plural(size.pipes, "pipe")}` : ""
+  }`;
 
 interface LayoutPickerProps {
   settings: LayoutSettings;
@@ -85,7 +90,7 @@ function LayoutSheet({ settings, onChange, measure, beltName }: LayoutPickerProp
         : key === "laneReuse"
           ? sizeOf(settings.nodeOrder, id)
           : undefined;
-    return size && belts(size.belts);
+    return size && widthText(size);
   };
 
   const keys = Object.keys(rowLabels) as (keyof LayoutSettings)[];
@@ -102,7 +107,7 @@ function LayoutSheet({ settings, onChange, measure, beltName }: LayoutPickerProp
       >
         <div css={{ fontSize: 13 }}>
           <div css={{ fontWeight: 700 }}>
-            Bus width: {current?.belts ?? 0} {beltName} belt{current?.belts === 1 ? "" : "s"}
+            Bus width: {current ? widthText(current, beltName) : `0 ${beltName} belts`}
           </div>
           <div css={{ color: palette.muted, fontSize: 12, marginTop: 2 }}>
             {current?.lanes ?? 0} lanes
@@ -129,8 +134,9 @@ function LayoutSheet({ settings, onChange, measure, beltName }: LayoutPickerProp
         >
           {bestIsCurrent
             ? "Already narrowest"
-            : best.belts < (current?.belts ?? 0)
-              ? `Narrowest: ${belts(best.belts)}`
+            : best.belts < (current?.belts ?? 0) ||
+                (best.belts === current?.belts && best.pipes < current.pipes)
+              ? `Narrowest: ${widthText(best)}`
               : `Same width, ${Math.round((1 - best.length / (current?.length ?? best.length)) * 100)}% shorter`}
         </button>
       </div>

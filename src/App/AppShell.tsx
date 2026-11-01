@@ -5,6 +5,7 @@ import {
   type BuildPreferences,
   loadBuildPreferences,
   saveBuildPreferences,
+  withFollowedGroups,
 } from "../lib/buildPreferences.ts";
 import { computeFlow } from "../lib/computeFlow.ts";
 import { defaultLayoutOptions, layoutBus } from "../lib/layoutBus.ts";
@@ -33,7 +34,8 @@ export function AppShell() {
   const [selection, setSelection] = useState<Selection>();
   const data = vanillaData;
   const [preferences, setPreferences] = useState(() => loadBuildPreferences(data));
-  const changePreferences = (next: BuildPreferences) => {
+  const changePreferences = (changed: BuildPreferences) => {
+    const next = withFollowedGroups(data, changed);
     setPreferences(next);
     saveBuildPreferences(next);
   };

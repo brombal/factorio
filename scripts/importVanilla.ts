@@ -202,6 +202,12 @@ const recipes: Recipe[] = craftingRecipes.map((recipe) => {
   const craftingCategory = categoryByProducers[recipe.producers.join(",")];
   if (!craftingCategory) throw new Error(`No crafting category for ${recipe.id}`);
   const outputs = Object.keys(recipe.out);
+  // The flow adds a cracker's demand after everything else, which only stays correct when every
+  // input but the oil it cracks is raw.
+  const notRaw = Object.keys(recipe.in).filter((input) => !raw.has(input));
+  if (balancingRecipes.includes(recipe.id) && notRaw.length !== 1) {
+    throw new Error(`Balancing recipe ${recipe.id} needs exactly one input that is not raw`);
+  }
   return {
     id: recipe.id,
     // Only recipes not named after their output need a name of their own.

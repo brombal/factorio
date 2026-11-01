@@ -1,6 +1,7 @@
 import type { ProductionData } from "../data/types.ts";
 import {
   type BuildPreferences,
+  followedGroups,
   type MachineGroup,
   type ModuleChoice,
   machineGroups,
@@ -8,6 +9,7 @@ import {
 } from "../lib/buildPreferences.ts";
 import { type Choice, ChoiceRow } from "../shared/ChoiceRow.tsx";
 import { Popover } from "../shared/Popover.tsx";
+import { YieldField } from "./YieldField.tsx";
 
 const groupLabel: Partial<Record<MachineGroup, string>> = {
   mining: "Drill",
@@ -53,8 +55,9 @@ export function BuildPicker({ data, preferences, onChange }: BuildPickerProps) {
 
   const machineRows = machineGroups(data).flatMap((group) => {
     const options = data.machines.filter((machine) => machine.categories.includes(group));
-    // A group with one machine, such as the oil refinery in vanilla, offers no choice.
-    if (options.length < 2) return [];
+    // A group with one machine, such as the oil refinery in vanilla, offers no choice, and a
+    // group that follows another takes that group's choice.
+    if (options.length < 2 || followedGroups[group]) return [];
     return {
       key: group,
       label: groupLabel[group] ?? group,
@@ -137,6 +140,10 @@ export function BuildPicker({ data, preferences, onChange }: BuildPickerProps) {
           disabledReason={"disabledReason" in row ? row.disabledReason : undefined}
         />
       ))}
+      <YieldField
+        value={preferences.pumpjackYield}
+        onChange={(pumpjackYield) => onChange({ ...preferences, pumpjackYield })}
+      />
     </Popover>
   );
 }
