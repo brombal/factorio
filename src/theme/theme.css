@@ -1,0 +1,33 @@
+:root {
+  color-scheme: dark;
+  --color-bg: oklch(0.18 0.01 260);
+  --color-surface: oklch(0.23 0.012 260);
+  --color-border: oklch(0.32 0.012 260);
+  --color-text: oklch(0.92 0.01 80);
+  --color-muted: oklch(0.65 0.015 260);
+  --color-accent: oklch(0.78 0.16 70);
+  --color-node: oklch(0.27 0.014 260);
+  --color-line: oklch(0.72 0.02 80);
+  --color-dim: oklch(0.34 0.008 260);
+
+  --color-cat-raw: oklch(0.7 0.06 60);
+  --color-cat-intermediate: oklch(0.78 0.05 80);
+  --color-cat-logistics: oklch(0.75 0.11 70);
+  --color-cat-production: oklch(0.72 0.1 190);
+  --color-cat-military: oklch(0.68 0.13 25);
+  --color-cat-science: oklch(0.74 0.12 300);
+  --color-cat-fluid: oklch(0.72 0.1 230);
+}
+
+html,
+body,
+#root {
+  margin: 0;
+  height: 100%;
+  background: var(--color-bg);
+  color: var(--color-text);
+  font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  font-size: 14px;
+  overscroll-behavior: none;
+  -webkit-text-size-adjust: 100%;
+}
